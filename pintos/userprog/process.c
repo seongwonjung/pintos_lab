@@ -271,7 +271,7 @@ int process_exec(void *f_name)
 
     /* We first kill the current context */
     process_cleanup();
-
+    supplemental_page_table_init(&thread_current()->spt);
     int argc = 0;
     char *argv[32];
     char *token, *save_ptr;
@@ -472,7 +472,9 @@ static bool load(int argc, char **argv, struct intr_frame *if_)
     process_activate(thread_current());
 
     /* Open executable file. */
+    lock_acquire(&filesys_lock);
     file = filesys_open(argv[0]);
+    lock_release(&filesys_lock);
     if (file == NULL)
     {
         printf("load: %s: open failed\n", argv[0]);
@@ -803,6 +805,7 @@ static bool lazy_load_segment(struct page *page, void *aux)
     }
 
     // 더 이상 aux 쓰지 않으면 free
+    file_close(p_aux->file);
     free(p_aux);
 
     return true;
@@ -839,7 +842,7 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage, uint32_t 
 
         /* TODO: Set up aux to pass information to the lazy_load_segment. */
         struct segment_info *aux = (struct segment_info *)malloc(sizeof(struct segment_info));
-        aux->file = file;
+        aux->file = file_reopen(file);
         aux->ofs = ofs;
         aux->read_byte = page_read_bytes;
         aux->zero_byte = page_zero_bytes;
