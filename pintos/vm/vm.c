@@ -155,7 +155,6 @@ static struct frame *vm_get_frame(void)
 static void vm_stack_growth(void *addr)
 {
     // addr을 PGSIZE에 맞게 내림(round down)
-    // void *stack_bottom = pg_round_down(addr);
     // 익명 페이지(anonymous pages)를 할당
     vm_alloc_page(VM_ANON, pg_round_down(addr), true);
     vm_claim_page(addr);
@@ -297,13 +296,13 @@ void supplemental_page_table_kill(struct supplemental_page_table *spt)
     hash_clear(&spt->pages, spt_destroy_func);
 }
 
-uint64_t spt_hash_func(const struct hash_elem *e, void *aux UNUSED)
+uint64_t spt_hash_func(const struct hash_elem *e, void *aux)
 {
     struct page *p = hash_entry(e, struct page, elem);
     return hash_bytes(&p->va, sizeof p->va);
 }
 
-bool spt_less_func(const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED)
+bool spt_less_func(const struct hash_elem *a, const struct hash_elem *b, void *aux)
 {
     struct page *pa = hash_entry(a, struct page, elem);
     struct page *pb = hash_entry(b, struct page, elem);
