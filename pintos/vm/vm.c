@@ -4,7 +4,7 @@
 #include "threads/mmu.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
-
+#include "lib/string.h"
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void vm_init(void)
@@ -154,7 +154,6 @@ static struct frame *vm_get_frame(void)
 static void vm_stack_growth(void *addr)
 {
     // addr을 PGSIZE에 맞게 내림(round down)
-    // void *stack_bottom = pg_round_down(addr);
     // 익명 페이지(anonymous pages)를 할당
     vm_alloc_page(VM_ANON, pg_round_down(addr), true);
     vm_claim_page(addr);
@@ -233,27 +232,82 @@ void supplemental_page_table_init(struct supplemental_page_table *spt)
 }
 
 /* Copy supplemental page table from src to dst */
-bool supplemental_page_table_copy(struct supplemental_page_table *dst UNUSED,
-                                  struct supplemental_page_table *src UNUSED)
+bool supplemental_page_table_copy(struct supplemental_page_table *dst,
+                                  struct supplemental_page_table *src)
 {
+    struct hash_iterator i;
+    hash_first(&i, &src->pages);
+    while (hash_next(&i))
+    {
+        struct page *parent_page = hash_entry(hash_cur(&i), struct page, elem);
+        enum vm_type type = VM_TYPE(parent_page->operations->type);
+        void *upage = parent_page->va;
+        bool writable = parent_page->writable;
+        switch (type)
+        {
+            // uninit 상태
+        case VM_UNINIT:
+            enum vm_type later_type = page_get_type(parent_page);
+            struct segment_info *new_aux = malloc(sizeof(struct segment_info));
+            if (new_aux == NULL)
+                return false;
+            if (parent_page->uninit.aux != NULL)
+            {
+                struct segment_info *aux = (struct segment_info *)(parent_page->uninit.aux);
+                new_aux->file = file_reopen(aux->file);
+                new_aux->ofs = aux->ofs;
+                new_aux->read_byte = aux->read_byte;
+                new_aux->zero_byte = aux->zero_byte;
+            }
+
+            if (!vm_alloc_page_with_initializer(later_type, upage, writable,
+                                                parent_page->uninit.init, new_aux))
+            {
+                file_close(new_aux->file);
+                free(new_aux);
+                return false;
+            }
+            break;
+            // load된 상태-> anon or file
+        case VM_ANON:
+        case VM_FILE:
+            if (!(vm_alloc_page(type, upage, writable) && vm_claim_page(upage)))
+            {
+                return false;
+            }
+            struct page *child_page = spt_find_page(dst, upage);
+            memcpy(child_page->frame->kva, parent_page->frame->kva, PGSIZE);
+            break;
+        default:
+            return false;
+        }
+    }
+    return true;
 }
 
 /* Free the resource hold by the supplemental page table */
-void supplemental_page_table_kill(struct supplemental_page_table *spt UNUSED)
+void supplemental_page_table_kill(struct supplemental_page_table *spt)
 {
     /* TODO: Destroy all the supplemental_page_table hold by thread and
      * TODO: writeback all the modified contents to the storage. */
+    hash_destroy(&spt->pages, spt_destroy_func);
 }
 
-uint64_t spt_hash_func(const struct hash_elem *e, void *aux UNUSED)
+uint64_t spt_hash_func(const struct hash_elem *e, void *aux)
 {
     struct page *p = hash_entry(e, struct page, elem);
     return hash_bytes(&p->va, sizeof p->va);
 }
 
-bool spt_less_func(const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED)
+bool spt_less_func(const struct hash_elem *a, const struct hash_elem *b, void *aux)
 {
     struct page *pa = hash_entry(a, struct page, elem);
     struct page *pb = hash_entry(b, struct page, elem);
     return pa->va < pb->va;
+}
+
+void spt_destroy_func(struct hash_elem *e, void *aux)
+{
+    struct page *p = hash_entry(e, struct page, elem);
+    vm_dealloc_page(p);
 }
