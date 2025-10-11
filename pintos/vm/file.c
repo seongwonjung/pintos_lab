@@ -69,6 +69,7 @@ void *do_mmap(void *addr, size_t length, int writable, struct file *file, off_t 
         {
             file_close(aux->file);
             free(aux);
+            supplemental_page_table_kill(&cur->spt);
             return false;
         }
         /* Advance. */
