@@ -120,6 +120,9 @@ void syscall_handler(struct intr_frame *f)
     case SYS_DUP2:
         f->R.rax = sys_dup2(f->R.rdi, f->R.rsi);
         break;
+    case SYS_MMAP:
+        f->R.rax = sys_mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.rcx, f->R.r8);
+        break;
     default:
         printf("not implemented system call!: %d\n", f->R.rax);
         sys_exit(-1);
@@ -376,4 +379,33 @@ static int sys_dup2(int oldfd, int newfd)
         cur->fdt[newfd] = file_duplicate2(cur->fdt[oldfd]);
 
     return newfd;
+}
+
+static void *sys_mmap(void *addr, size_t length, int writable, int fd, off_t offset)
+{
+    check_ptr(addr);
+    struct thread *cur = thread_current();
+
+    // length가 0 인지, addr이 페이지 정렬되지 않았는지
+    if (length == 0 || (uintptr_t)addr & (PGSIZE - 1) != 0)
+        return NULL;
+
+    // 파일이 NULL인지, 열린 파일의 length가 0인지
+    if (cur->fdt[fd] == NULL || file_length(cur->fdt[fd]) == 0)
+        return NULL;
+
+    // fd가 콘솔 입출력인지
+    if (fd == STDIN_FDNO || fd == STDOUT_FDNO || fd == STDERR_FDNO)
+        return NULL;
+
+    // 매핑되는 페이지 범위가 스택이나 매핑된 페이지와 겹치는지
+    uintptr_t page_addr = (uintptr_t)addr;
+    while (page_addr < (uintptr_t)addr + length)
+    {
+        if (spt_find_page(&cur->spt, page_addr) != NULL)
+            return NULL;
+        page_addr += PGSIZE;
+    }
+
+    do_mmap(addr, length, writable, cur->fdt[fd], offset);
 }
