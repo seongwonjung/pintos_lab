@@ -42,7 +42,8 @@ static unsigned sys_tell(int fd);
 static void sys_close(int fd);
 
 static int sys_dup2(int oldfd, int newfd);
-
+static void *sys_mmap(void *addr, size_t length, int writable, int fd, off_t offset);
+static void sys_munmap(void *addr);
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -121,7 +122,10 @@ void syscall_handler(struct intr_frame *f)
         f->R.rax = sys_dup2(f->R.rdi, f->R.rsi);
         break;
     case SYS_MMAP:
-        f->R.rax = sys_mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.rcx, f->R.r8);
+        f->R.rax = sys_mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+        break;
+    case SYS_MUNMAP:
+        sys_munmap(f->R.rdi);
         break;
     default:
         printf("not implemented system call!: %d\n", f->R.rax);
@@ -295,7 +299,12 @@ static int sys_read(int fd, void *buffer, unsigned size)
         return -1;
 
     else
-        return file_read(cur->fdt[fd], buffer, size);
+    {
+        lock_acquire(&filesys_lock);
+        off_t read_size = file_read(cur->fdt[fd], buffer, size);
+        lock_release(&filesys_lock);
+        return read_size;
+    }
 }
 
 static int sys_write(int fd, const void *buffer, unsigned size)
@@ -383,19 +392,22 @@ static int sys_dup2(int oldfd, int newfd)
 
 static void *sys_mmap(void *addr, size_t length, int writable, int fd, off_t offset)
 {
-    check_ptr(addr);
-    struct thread *cur = thread_current();
-
-    // length가 0 인지, addr이 페이지 정렬되지 않았는지
-    if (length == 0 || (uintptr_t)addr & (PGSIZE - 1) != 0)
+    // addr 이 NULL 인지, 커널 주소인지
+    if (addr == NULL || is_kernel_vaddr(addr))
         return NULL;
-
-    // 파일이 NULL인지, 열린 파일의 length가 0인지
-    if (cur->fdt[fd] == NULL || file_length(cur->fdt[fd]) == 0)
+    struct thread *cur = thread_current();
+    // length가 0 인지, addr이 페이지 정렬되지 않았는지, offset이 length 보다 큰지
+    if (length == 0 || pg_ofs(addr) != 0 || offset > length)
         return NULL;
 
     // fd가 콘솔 입출력인지
-    if (fd == STDIN_FDNO || fd == STDOUT_FDNO || fd == STDERR_FDNO)
+    if (IS_STDIO(cur->fdt[fd]))
+        return NULL;
+
+    // 파일이 NULL인지, 열린 파일의 length가 0인지
+    if (cur->fdt[fd] == NULL)
+        return NULL;
+    if (file_length(cur->fdt[fd]) == 0)
         return NULL;
 
     // 매핑되는 페이지 범위가 스택이나 매핑된 페이지와 겹치는지
@@ -407,5 +419,14 @@ static void *sys_mmap(void *addr, size_t length, int writable, int fd, off_t off
         page_addr += PGSIZE;
     }
 
-    do_mmap(addr, length, writable, cur->fdt[fd], offset);
+    return do_mmap(addr, length, writable, cur->fdt[fd], offset);
+}
+
+static void sys_munmap(void *addr)
+{
+    // addr 이 NULL 인지, 커널 주소인지
+    if (addr == NULL || is_kernel_vaddr(addr))
+        return;
+
+    do_munmap(addr);
 }
