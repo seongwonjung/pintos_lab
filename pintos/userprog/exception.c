@@ -160,8 +160,11 @@ static void page_fault(struct intr_frame *f)
             thread_exit();
         }
     }
-    if (not_present && write)
+    if (not_present && write || not_present && !write)
     {
+        struct thread *cur = thread_current();
+        cur->exit_status = -1;
+        printf("%s: exit(%d)\n", cur->name, cur->exit_status);
         thread_exit();
         return;
     }

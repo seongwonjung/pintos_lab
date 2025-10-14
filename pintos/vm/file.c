@@ -59,11 +59,9 @@ static void file_backed_destroy(struct page *page)
         }
         file_close(file_info->file);
         free(file_info);
-        file_page->file_info = NULL;
     }
 
     free(page->frame);
-    page->frame = NULL;
 }
 
 /* Do the mmap */
@@ -84,17 +82,13 @@ void *do_mmap(void *addr, size_t length, int writable, struct file *file, off_t 
         aux->ofs = offset;
         aux->read_byte = page_read_bytes;
         aux->zero_byte = page_zero_bytes;
-        aux->map_cnt = map_count++;
+        aux->map_cnt = map_count;
         if (!vm_alloc_page_with_initializer(VM_FILE, upage, writable, lazy_file_segment, aux))
-        {
-
-            file_close(aux->file);
-            free(aux);
             return NULL;
-        }
         /* Advance. */
         length -= page_read_bytes;
         offset += page_read_bytes;
+        map_count++;
         upage += PGSIZE;
     }
     return (void *)addr;
@@ -109,8 +103,16 @@ void do_munmap(void *addr)
     int target_cnt = upage->file.file_info->map_cnt;
     while (upage != NULL)
     {
+        // 아직 load되지 않았을 경우 -> uninit 인 경우에 대한 조건도 필요하다.
+        if (upage->operations->type == VM_UNINIT)
+        {
+            // 이땐 map_cnt 비교를 할 수 없음
+            if (upage->uninit.aux->file == NULL)
+                return;
+        }
         // file이 매핑되어 있는지, map_cnt 가 일치하는지
-        if (upage->file.file_info->file == NULL || upage->file.file_info->map_cnt != target_cnt)
+        else if (upage->file.file_info->file == NULL ||
+                 upage->file.file_info->map_cnt != target_cnt)
             return;
         spt_remove_page(&cur->spt, upage);
         target_cnt++;
