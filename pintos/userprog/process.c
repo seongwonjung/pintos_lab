@@ -359,7 +359,6 @@ static void process_cleanup(void)
 
 #ifdef VM
     supplemental_page_table_kill(&curr->spt);
-    supplemental_page_table_init(&curr->spt);
 #endif
 
     uint64_t *pml4;
@@ -789,7 +788,6 @@ static bool lazy_load_segment(struct page *page, void *aux)
     if (page_read_byte > 0)
     {
         readn = file_read_at(p_aux->file, p_kva, page_read_byte, p_aux->ofs);
-
         // 읽기 실패
         if (page_read_byte != (size_t)readn)
         {
@@ -805,7 +803,8 @@ static bool lazy_load_segment(struct page *page, void *aux)
     }
 
     // 더 이상 aux 쓰지 않으면 free
-    file_close(p_aux->file);
+    if (p_aux->file != NULL)
+        file_close(p_aux->file);
     free(p_aux);
 
     return true;
@@ -847,7 +846,7 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage, uint32_t 
         aux->read_byte = page_read_bytes;
         aux->zero_byte = page_zero_bytes;
 
-        if (!vm_alloc_page_with_initializer(VM_FILE, upage, writable, lazy_load_segment, aux))
+        if (!vm_alloc_page_with_initializer(VM_ANON, upage, writable, lazy_load_segment, aux))
         {
             file_close(aux->file);
             free(aux);

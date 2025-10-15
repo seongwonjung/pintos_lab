@@ -36,13 +36,40 @@ bool file_backed_initializer(struct page *page, enum vm_type type, void *kva)
 /* Swap in the page by read contents from the file. */
 static bool file_backed_swap_in(struct page *page, void *kva)
 {
-    struct file_page *file_page UNUSED = &page->file;
+    struct file_page *file_page = &page->file;
+    struct file_info *p_aux = file_page->file_info;
+    if (p_aux == NULL)
+        return false;
+    size_t page_read_byte = p_aux->read_byte; // 읽을 바이트 수
+    size_t page_zero_byte = p_aux->zero_byte; // 제로 바이트 수
+
+    if (page_read_byte > 0)
+        file_read_at(p_aux->file, kva, page_read_byte, p_aux->ofs);
+
+    // 남은 영역 0으로 채우기
+    if (page_zero_byte > 0)
+        memset(kva + page_read_byte, 0, page_zero_byte);
+
+    page->file.file_info = p_aux;
+
+    return true;
 }
 
 /* Swap out the page by writeback contents to the file. */
 static bool file_backed_swap_out(struct page *page)
 {
-    struct file_page *file_page UNUSED = &page->file;
+    struct file_page *file_page = &page->file;
+    struct thread *t = thread_current();
+    struct file_info *file_info = file_page->file_info;
+    if (file_info != NULL && file_info->file != NULL)
+    {
+        if (pml4_is_dirty(t->pml4, page->va))
+        {
+            file_write_at(file_info->file, page->frame->kva, file_info->read_byte, file_info->ofs);
+            pml4_set_dirty(t->pml4, page->va, false);
+        }
+    }
+    return true;
 }
 
 /* Destory the file backed page. PAGE will be freed by the caller. */
@@ -50,7 +77,7 @@ static void file_backed_destroy(struct page *page)
 {
     struct file_page *file_page = &page->file;
     struct file_info *file_info = file_page->file_info;
-    if (file_info != NULL)
+    if (file_info != NULL && file_info->file != NULL)
     {
         // 파일을 수정 했다면(dirty_bit == true) 다시 쓰기
         if (pml4_is_dirty(thread_current()->pml4, page->va))
@@ -60,8 +87,6 @@ static void file_backed_destroy(struct page *page)
         file_close(file_info->file);
         free(file_info);
     }
-
-    free(page->frame);
 }
 
 /* Do the mmap */
@@ -78,7 +103,7 @@ void *do_mmap(void *addr, size_t length, int writable, struct file *file, off_t 
         struct file_info *aux = (struct file_info *)malloc(sizeof(struct file_info));
         if (aux == NULL)
             return NULL;
-        aux->file = file_reopen(file);
+        aux->file = file_duplicate2(file);
         aux->ofs = offset;
         aux->read_byte = page_read_bytes;
         aux->zero_byte = page_zero_bytes;

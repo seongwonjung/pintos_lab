@@ -52,7 +52,6 @@ struct page
     /* Your implementation */
     struct hash_elem elem; /* 해쉬테이블에 넣을 elem */
     bool writable;
-
     /* Per-type data are binded into the union.
      * Each function automatically detects the current union */
     union {
@@ -70,6 +69,7 @@ struct frame
 {
     void *kva;
     struct page *page;
+    struct list_elem list_elem;
 };
 
 /* The function table for page operations.

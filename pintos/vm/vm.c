@@ -5,7 +5,7 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include <string.h>
-
+struct list frame_list;
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void vm_init(void)
@@ -18,6 +18,7 @@ void vm_init(void)
     register_inspect_intr();
     /* DO NOT MODIFY UPPER LINES. */
     /* TODO: Your code goes here. */
+    list_init(&frame_list);
 }
 
 /* Get the type of the page. This function is useful if you want to know the
@@ -39,6 +40,7 @@ enum vm_type page_get_type(struct page *page)
 static struct frame *vm_get_victim(void);
 static bool vm_do_claim_page(struct page *page);
 static struct frame *vm_evict_frame(void);
+struct list_elem *clock_ptr;
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
@@ -110,12 +112,14 @@ bool spt_insert_page(struct supplemental_page_table *spt, struct page *page)
 
 void spt_remove_page(struct supplemental_page_table *spt, struct page *page)
 {
+    // 페이지가 물리 프레임에 연결되어 있는 경우에만 관련 리소스를 해제합니다.
+    if (page->frame)
+    {
+        pml4_clear_page(thread_current()->pml4, page->va);
+        palloc_free_page(page->frame->kva);
+    }
     hash_delete(&spt->pages, &page->elem);
-    void *kva = page->frame->kva;
-    void *va = page->va;
     vm_dealloc_page(page);
-    pml4_clear_page(thread_current()->pml4, va);
-    palloc_free_page(kva);
 }
 
 /* Get the struct frame, that will be evicted. */
@@ -123,6 +127,31 @@ static struct frame *vm_get_victim(void)
 {
     struct frame *victim = NULL;
     /* TODO: The policy for eviction is up to you. */
+    struct list_elem *e;
+    struct thread *t = thread_current();
+    if (clock_ptr == NULL || clock_ptr == list_end(&frame_list))
+        clock_ptr = list_begin(&frame_list);
+
+    for (e = clock_ptr; e != list_end(&frame_list); e = list_next(e))
+    {
+        victim = list_entry(e, struct frame, list_elem);
+        if (!pml4_is_accessed(t->pml4, victim->page->va))
+        {
+            clock_ptr = e;
+            return victim;
+        }
+        pml4_set_accessed(t->pml4, victim->page->va, false);
+    }
+    for (e = list_begin(&frame_list); e != list_end(&frame_list); e = list_next(e))
+    {
+        victim = list_entry(e, struct frame, list_elem);
+        if (!pml4_is_accessed(t->pml4, victim->page->va))
+        {
+            clock_ptr = e;
+            return victim;
+        }
+        pml4_set_accessed(t->pml4, victim->page->va, false);
+    }
 
     return victim;
 }
@@ -131,10 +160,18 @@ static struct frame *vm_get_victim(void)
  * Return NULL on error.*/
 static struct frame *vm_evict_frame(void)
 {
-    struct frame *victim UNUSED = vm_get_victim();
+    struct frame *victim = vm_get_victim();
     /* TODO: swap out the victim and return the evicted frame. */
-
-    return NULL;
+    // 바로 swap_out하여 실패시 NULL 반환
+    if (!swap_out(victim->page))
+    {
+        PANIC("Not enough swap disk space");
+    }
+    pml4_clear_page(thread_current()->pml4, victim->page->va);
+    victim->page->frame = NULL;
+    victim->page = NULL;
+    memset(victim->kva, 0, PGSIZE);
+    return victim;
 }
 
 /* palloc() and get frame. If there is no available page, evict the page
@@ -144,12 +181,24 @@ static struct frame *vm_evict_frame(void)
 static struct frame *vm_get_frame(void)
 {
     /* TODO: Fill this function. */
-    struct frame *frame = (struct frame *)malloc(sizeof(struct frame));
-    frame->kva = palloc_get_page(PAL_USER | PAL_ZERO);
-    // 여기에 할당 실패시 페이지 치우고 다시 할당받는 로직 필요
-    // 현재는 없음
-    frame->page = NULL;
+    void *kva = palloc_get_page(PAL_USER | PAL_ZERO);
+    // 할당 실패시 vm_evict_frame 호출
+    if (kva == NULL)
+    {
+        struct frame *victim = vm_evict_frame();
+        // memset(victim->kva, 0, PGSIZE);
+        return victim;
+    }
 
+    struct frame *frame = (struct frame *)malloc(sizeof(struct frame));
+    if (frame == NULL)
+    {
+        palloc_free_page(kva);
+        return NULL;
+    }
+    frame->kva = kva;
+    list_push_back(&frame_list, &frame->list_elem);
+    frame->page = NULL;
     ASSERT(frame != NULL);
     ASSERT(frame->page == NULL);
     return frame;
@@ -193,8 +242,7 @@ bool vm_try_handle_fault(struct intr_frame *f, void *addr, bool user, bool write
         }
         return false;
     }
-    if (write && !page->writable)
-        return false;
+
     return vm_do_claim_page(page);
 }
 
@@ -203,6 +251,8 @@ bool vm_try_handle_fault(struct intr_frame *f, void *addr, bool user, bool write
 void vm_dealloc_page(struct page *page)
 {
     destroy(page);
+    if (page->frame)
+        free(page->frame);
     free(page);
 }
 
@@ -299,7 +349,7 @@ void supplemental_page_table_kill(struct supplemental_page_table *spt)
 {
     /* TODO: Destroy all the supplemental_page_table hold by thread and
      * TODO: writeback all the modified contents to the storage. */
-    hash_destroy(&spt->pages, spt_destroy_func);
+    hash_clear(&spt->pages, spt_destroy_func);
 }
 
 uint64_t spt_hash_func(const struct hash_elem *e, void *aux UNUSED)
